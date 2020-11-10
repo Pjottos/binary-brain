@@ -6,13 +6,13 @@ extern crate test;
 #[macro_export]
 macro_rules! binary_nn {
     ($Name:ident, $InputCount:expr, $HiddenCount:expr, $OutputCount:expr) => {
-        sa::const_assert_eq!($InputCount % 64, 0);
-        sa::const_assert_eq!($HiddenCount % 64, 0);
-        sa::const_assert_eq!($OutputCount % 64, 0);
+        sa::const_assert_eq!($InputCount % 32, 0);
+        sa::const_assert_eq!($HiddenCount % 32, 0);
+        sa::const_assert_eq!($OutputCount % 32, 0);
 
         struct $Name {
-            weights: [u64; Self::WEIGHT_COUNT / 64],
-            values: [u64; Self::WEIGHT_COUNT / 64],
+            weights: [u32; Self::WEIGHT_COUNT / 32],
+            values: [u32; Self::WEIGHT_COUNT / 32],
             act: [u8; Self::NEURON_COUNT],
         }
 
@@ -30,7 +30,7 @@ macro_rules! binary_nn {
     
                     rng.fill_bytes(std::slice::from_raw_parts_mut(
                         result.weights.as_mut_ptr() as *mut u8,
-                        ($InputCount * $HiddenCount) / 8
+                        ($InputCount * $HiddenCount) / (32 / 8)
                     ));
                     rng.fill_bytes(&mut result.act);
 
@@ -50,10 +50,11 @@ macro_rules! binary_nn {
                     
                     let fire = sum >= self.act[i] as i32;
                     for j in 0..Self::NEURON_COUNT {
-                        let idx = j * (Self::NEURON_COUNT / 64) + i / 64;
-                        let mask = 1 << (i % 64);
+                        let idx = j * (Self::NEURON_COUNT / 32) + i / 32;
+                        let mask = 1 << (i % 32);
 
                         // TODO: roughly 98% of cycles is spent on the 'or' and 'xor' here, find a way to optimize it
+                        // it seems to be caused by the memory writes
 
                         // this makes it so the 'or' is never done if not needed
                         // since the loop is unrolled, there is no overhead from the comparison
@@ -77,8 +78,8 @@ macro_rules! binary_nn {
             #[inline]
             fn calc_sum(&self, neuron: usize) -> i32 {
                 let mut sum = 0;
-                for j in 0..Self::NEURON_COUNT / 64 {
-                    let idx = (neuron * Self::NEURON_COUNT) / 64 + j;
+                for j in 0..Self::NEURON_COUNT / 32 {
+                    let idx = (neuron * Self::NEURON_COUNT) / 32 + j;
                     sum += self.values[idx].count_ones() as i32;
                     sum -= self.values[idx].count_zeros() as i32;
                 }
@@ -104,7 +105,7 @@ mod tests {
 
         #[bench]
         fn cycle(b: &mut Bencher) {
-            let mut rng = Xoshiro256StarStar::from_seed([0u8; 32]);
+            let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
             let mut nn = Net::new(&mut rng);
             let input = [u8::MAX; 64];
 
@@ -121,7 +122,7 @@ mod tests {
 
         #[bench]
         fn cycle(b: &mut Bencher) {
-            let mut rng = Xoshiro256StarStar::from_seed([0u8; 32]);
+            let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
             let mut nn = Net::new(&mut rng);
             let input = [u8::MAX; 64];
 
