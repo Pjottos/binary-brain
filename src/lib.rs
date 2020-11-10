@@ -6,11 +6,8 @@ extern crate test;
 #[macro_export]
 macro_rules! binary_nn {
     ($Name:ident, $InputCount:expr, $HiddenCount:expr, $OutputCount:expr) => {
-        // it's possible to use u32 to provide more flexibility for input/output count
-        // but that results in roughly a 2x slowdown
-        sa::const_assert_eq!($InputCount % 64, 0);
-        sa::const_assert_eq!($HiddenCount % 64, 0);
-        sa::const_assert_eq!($OutputCount % 64, 0);
+        // needed because of the way weights/values are stored
+        sa::const_assert_eq!($Name::NEURON_COUNT % 64, 0);
 
         struct $Name {
             weights: [u64; Self::WEIGHT_COUNT / 64],
@@ -41,8 +38,8 @@ macro_rules! binary_nn {
             }
 
             #[inline]
-            pub fn cycle(&mut self, input: &[u8; $InputCount]) -> [bool; $OutputCount] {
-                let mut output = [false; $OutputCount];
+            pub fn cycle(&mut self, input: &[u8; $InputCount]) -> [(bool, i32); $OutputCount] {
+                let mut output = [(false, 0); $OutputCount];
 
                 for i in (0..Self::NEURON_COUNT).step_by(64) {
                     // write the values of each connection in batches to reduce memory i/o
@@ -52,18 +49,19 @@ macro_rules! binary_nn {
 
                     for j in i..i + 64 {
                         let mut sum = self.calc_sum(j);
+                        
+                        let output_start = Self::NEURON_COUNT - $OutputCount;
                         if j < $InputCount {
                             sum += input[j] as i32;
-                        }    
+                        } 
                         let fire = sum >= self.act[j] as i32;
                         // set bits in the batch variable in the order it should have 
                         // in the value matrix 
                         batch |= (fire as u64) << (j - i);
                         
-                        let output_start = Self::NEURON_COUNT - $OutputCount;
-                        if j > output_start && fire {
+                        if j > output_start {
                             let idx = j - output_start;
-                            output[idx] = true;
+                            output[idx] = (fire, sum);
                         }
                     }
                     
