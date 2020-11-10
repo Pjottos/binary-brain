@@ -5,149 +5,85 @@ extern crate test;
 
 #[macro_export]
 macro_rules! binary_nn {
-    ($Name:ident, $InputCount:expr, $HiddenCount:expr, $OutputCount:expr, $MaxInputAct:expr) => {
+    ($Name:ident, $InputCount:expr, $HiddenCount:expr, $OutputCount:expr) => {
         sa::const_assert_eq!($InputCount % 64, 0);
         sa::const_assert_eq!($HiddenCount % 64, 0);
         sa::const_assert_eq!($OutputCount % 64, 0);
 
-        sa::const_assert!($InputCount + $HiddenCount - 1 <= u16::MAX);
-        sa::const_assert!($MaxInputAct <= u16::MAX);
         struct $Name {
-            input_weights: [u64; ($InputCount * $HiddenCount) / 64],
-            input_act: [u16; $InputCount],
-            input_hidden_v: [u64; ($InputCount * $HiddenCount) / 64],
-
-            hidden_weights: [u64; ($HiddenCount * $HiddenCount) / 64],
-            hidden_act: [u16; $HiddenCount],
-            hidden_hidden_v: [u64; ($HiddenCount * $HiddenCount) / 64],
-
-            output_weights: [u64; ($HiddenCount * $OutputCount) / 64],
-            output_act: [u16; $OutputCount],
-            hidden_output_v: [u64; ($HiddenCount * $OutputCount) / 64],
-
-            output: [bool; $OutputCount],
+            weights: [u64; Self::WEIGHT_COUNT / 64],
+            values: [u64; Self::WEIGHT_COUNT / 64],
+            act: [u8; Self::NEURON_COUNT],
         }
 
         impl $Name {
-            const MAX_ACT_HIDDEN: u16 = $InputCount + $HiddenCount - 1;
-            const MAX_ACT_OUTPUT: u16 = $HiddenCount;
+            const NEURON_COUNT: usize = $InputCount + $HiddenCount + $OutputCount;
+            const WEIGHT_COUNT: usize = Self::NEURON_COUNT * Self::NEURON_COUNT;
 
             pub fn new(rng: &mut impl RngCore) -> $Name {
                 unsafe {
                     let mut result = $Name {
-                        input_weights: MaybeUninit::uninit().assume_init(),
-                        input_act: MaybeUninit::uninit().assume_init(),
-                        input_hidden_v: MaybeUninit::zeroed().assume_init(),
-
-                        hidden_weights: MaybeUninit::uninit().assume_init(),
-                        hidden_act: MaybeUninit::uninit().assume_init(),
-                        hidden_hidden_v: MaybeUninit::zeroed().assume_init(),
-
-                        output_weights: MaybeUninit::uninit().assume_init(),
-                        output_act: MaybeUninit::uninit().assume_init(),
-                        hidden_output_v: MaybeUninit::zeroed().assume_init(),
-
-                        output: [false; $OutputCount],
+                        weights: MaybeUninit::uninit().assume_init(),
+                        act: MaybeUninit::uninit().assume_init(),
+                        values: MaybeUninit::zeroed().assume_init(),
                     };
     
                     rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.input_weights.as_mut_ptr() as *mut u8,
+                        result.weights.as_mut_ptr() as *mut u8,
                         ($InputCount * $HiddenCount) / 8
                     ));
-                    rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.input_act.as_mut_ptr() as *mut u8,
-                        $InputCount * 2
-                    ));
+                    rng.fill_bytes(&mut result.act);
 
-                    rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.hidden_weights.as_mut_ptr() as *mut u8,
-                        ($HiddenCount * $HiddenCount) / 8
-                    ));
-                    rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.hidden_act.as_mut_ptr() as *mut u8,
-                        $HiddenCount * 2
-                    ));
-
-                    rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.output_weights.as_mut_ptr() as *mut u8,
-                        ($HiddenCount * $OutputCount) / 8
-                    ));
-                    rng.fill_bytes(std::slice::from_raw_parts_mut(
-                        result.output_act.as_mut_ptr() as *mut u8,
-                        $OutputCount * 2
-                    ));
-    
                     result
                 }
             }
 
             #[inline]
-            pub fn cycle(&mut self, input: &[u16; $InputCount]) {
-                for i in 0..$InputCount {
-                    let fire = input[i] >= self.input_act[i];
+            pub fn cycle(&mut self, input: &[u8; $InputCount]) -> [bool; $OutputCount]{
+                let mut output = [false; $OutputCount];
+
+                for i in 0..Self::NEURON_COUNT {
+                    let mut sum = self.calc_sum(i);
+                    if i < $InputCount {
+                        sum += input[i] as i32;
+                    }
                     
-                    for j in 0..$HiddenCount {
-                        // go to the right row in the bit matrix, then divide by 64 to get to the first u64 of the row
-                        // then, go to the right u64 by adding i / 64
-                        let idx = (j * $InputCount) / 64 + i / 64;
+                    let fire = sum >= self.act[i] as i32;
+                    for j in 0..Self::NEURON_COUNT {
+                        let idx = j * (Self::NEURON_COUNT / 64) + i / 64;
                         let mask = 1 << (i % 64);
+
+                        // TODO: roughly 98% of cycles is spent on the 'or' and 'xor' here, find a way to optimize it
+
+                        // this makes it so the 'or' is never done if not needed
+                        // since the loop is unrolled, there is no overhead from the comparison
                         if fire {
-                            self.input_hidden_v[idx] |= mask;
+                            self.values[idx] |= mask;
                         } else {
-                            self.input_hidden_v[idx] &= !mask;
-                        }
-                    }
-                }
-
-                for i in 0..$HiddenCount {
-                    let mut sum = 0;
-                    for j in 0..$InputCount / 64 {
-                        // see above
-                        let idx = (i * $InputCount) / 64 + j;
-                        sum += self.input_hidden_v[idx].count_ones();
-                    }
-
-                    for j in 0..$HiddenCount / 64 {
-                        let idx = (i * $HiddenCount) / 64 + j;
-                        sum += self.hidden_hidden_v[idx].count_ones();
-                    }
-
-                    let fire = sum >= self.hidden_act[i] as u32;
-                    for j in 0..$HiddenCount {
-                        let idx = (j * $HiddenCount) / 64 + i / 64;
-                        let mask = 1 << (i % 64);
-                        if fire {
-                            self.hidden_hidden_v[idx] |= mask;
-                        } else {
-                            self.hidden_hidden_v[idx] &= !mask;
+                            self.values[idx] ^= mask;
                         }
                     }
 
-                    for j in 0..$OutputCount {
-                        let idx = (j * $HiddenCount) / 64 + i / 64;
-                        let mask = 1 << (i % 64);
-                        if fire {
-                            self.hidden_output_v[idx] |= mask;
-                        } else {
-                            self.hidden_output_v[idx] &= !mask;
-                        }
+                    let output_start = Self::NEURON_COUNT - $OutputCount;
+                    if i > output_start && fire {
+                        let idx = i - output_start;
+                        output[idx] = true;
                     }
                 }
-
-                for i in 0..$OutputCount {
-                    let mut sum = 0;
-                    for j in 0..$HiddenCount / 64 {
-                        let idx = (i * $HiddenCount) / 64 + j;
-                        sum += self.hidden_hidden_v[idx].count_ones();
-                    }
-
-                    self.output[i] = sum >= self.output_act[i] as u32;
-                }
+                
+                output
             }
 
             #[inline]
-            pub fn output(&self) -> &[bool; $OutputCount] {
-                &self.output
+            fn calc_sum(&self, neuron: usize) -> i32 {
+                let mut sum = 0;
+                for j in 0..Self::NEURON_COUNT / 64 {
+                    let idx = (neuron * Self::NEURON_COUNT) / 64 + j;
+                    sum += self.values[idx].count_ones() as i32;
+                    sum -= self.values[idx].count_zeros() as i32;
+                }
+
+                sum
             }
         }
     };
@@ -164,13 +100,13 @@ mod tests {
     mod nn_64_64_64 {
         use super::*;
 
-        binary_nn!(Net, 64, 64, 64, u16::MAX); 
+        binary_nn!(Net, 64, 64, 64); 
 
         #[bench]
         fn cycle(b: &mut Bencher) {
             let mut rng = Xoshiro256StarStar::from_seed([0u8; 32]);
             let mut nn = Net::new(&mut rng);
-            let input = [u16::MAX; 64];
+            let input = [u8::MAX; 64];
 
             b.iter(|| {
                 nn.cycle(&input)
@@ -181,13 +117,13 @@ mod tests {
     mod nn_64_512_64 {
         use super::*;
 
-        binary_nn!(Net, 64, 512, 64, u16::MAX); 
+        binary_nn!(Net, 64, 512, 64); 
 
         #[bench]
         fn cycle(b: &mut Bencher) {
             let mut rng = Xoshiro256StarStar::from_seed([0u8; 32]);
             let mut nn = Net::new(&mut rng);
-            let input = [u16::MAX; 64];
+            let input = [u8::MAX; 64];
 
             b.iter(|| {
                 nn.cycle(&input)
@@ -198,19 +134,17 @@ mod tests {
     mod nn_64_4096_64 {
         use super::*;
 
-        binary_nn!(Net, 64, 4096, 64, u16::MAX); 
+        binary_nn!(Net, 64, 4096, 64); 
 
         #[bench]
         fn cycle(b: &mut Bencher) {
-            let mut rng = Xoshiro256StarStar::from_seed([0u8; 32]);
+            let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
             let mut nn = Net::new(&mut rng);
-            let input = [u16::MAX; 64];
+            let input = [u8::MAX; 64];
 
             b.iter(|| {
                 nn.cycle(&input)
             });
         }
     }
-
-    
 }
