@@ -6,8 +6,7 @@ use std::iter::repeat_with;
 use rand_xoshiro::rand_core::{RngCore};
 
 pub struct BinaryBrain {
-    weights: Vec<u64>,
-    values: Vec<u64>,
+    weight_value_store: Vec<u64>,
     act: Vec<u8>,
     input_count: usize,
     output_count: usize,
@@ -21,8 +20,7 @@ impl BinaryBrain {
         let weight_count = total_count * total_count;
 
         BinaryBrain {
-            weights: repeat_with(|| rng.next_u64()).take(weight_count / 64).collect(),
-            values: repeat_with(|| rng.next_u64()).take(weight_count / 64).collect(),
+            weight_value_store: repeat_with(|| rng.next_u64()).take((weight_count * 2) / 64).collect(),
             act: act,
             input_count: input_count,
             output_count: output_count,
@@ -40,7 +38,8 @@ impl BinaryBrain {
             let mut batch: u64 = 0;
 
             for j in i..i + 64 {
-                let mut sum = self.calc_sum(j);
+                // index will definitely be within bounds
+                let mut sum = unsafe { self.calc_sum(j) };
                 
                 if j < self.input_count {
                     sum += input[j] as i32;
@@ -59,7 +58,7 @@ impl BinaryBrain {
             
             for j in (0..neuron_count).step_by(64) {
                 let idx = j * (neuron_count / 64) + i / 64;
-                self.values[idx] = batch;
+                self.set_value(idx, batch);
             }
         }
         
@@ -67,7 +66,7 @@ impl BinaryBrain {
     }
 
     #[inline]
-    fn calc_sum(&self, neuron: usize) -> i32 {
+    unsafe fn calc_sum(&self, neuron: usize) -> i32 {
         let mut sum = 0;
         let weight_row_size = self.act.len() / 64;
         let start = neuron * weight_row_size;
@@ -82,12 +81,42 @@ impl BinaryBrain {
             // value  |   -1    |   1    |
 
             // couldn't get the bounds check optimized away unfortunately
-            let weighted = unsafe { !(self.weights.get_unchecked(j) ^ self.values.get_unchecked(j)) };
+            let weighted = !(self.weight_unchecked(j) ^ self.value_unchecked(j));
             sum += weighted.count_ones() as i32;
             sum -= weighted.count_zeros() as i32;
         }
 
         sum
+    }
+
+    #[inline]
+    fn value(&self, idx: usize) -> u64 {
+        self.weight_value_store[idx * 2 + 1]
+    }
+
+    #[inline]
+    fn weight(&self, idx: usize) -> u64 {
+        self.weight_value_store[idx * 2]
+    }
+
+    #[inline]
+    fn set_value(&mut self, idx: usize, value: u64) {
+        self.weight_value_store[idx * 2 + 1] = value;
+    }
+
+    #[inline]
+    fn set_weight(&mut self, idx: usize, value: u64) {
+        self.weight_value_store[idx * 2] = value;
+    }
+
+    #[inline]
+    unsafe fn value_unchecked(&self, idx: usize) -> &u64 {
+        self.weight_value_store.get_unchecked(idx * 2 + 1)
+    }
+
+    #[inline]
+    unsafe fn weight_unchecked(&self, idx: usize) -> &u64 {
+        self.weight_value_store.get_unchecked(idx * 2)
     }
 }
 
