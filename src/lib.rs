@@ -5,6 +5,8 @@ extern crate test;
 use std::iter::repeat_with;
 use rand_xoshiro::rand_core::{RngCore};
 
+pub type Result<T> = std::result::Result<T, BinaryBrainError>;
+
 pub struct BinaryBrain {
     weight_value_store: Vec<u64>,
     act: Vec<u8>,
@@ -13,18 +15,25 @@ pub struct BinaryBrain {
 }
 
 impl BinaryBrain {
-    pub fn new(input_count: usize, output_count: usize, total_count: usize, rng: &mut impl RngCore) -> BinaryBrain {
+    pub fn new(input_count: usize, output_count: usize, total_count: usize, rng: &mut impl RngCore) -> Result<BinaryBrain> {
+        if total_count % 64 != 0 {
+            return Err(BinaryBrainError::TotalNotDivisbleBy64);
+        }
+        if input_count + output_count > total_count {
+            return Err(BinaryBrainError::InputOutputAboveTotal);
+        }
+
         let mut act = vec![0; total_count];
         rng.fill_bytes(act.as_mut_slice());
 
         let weight_count = total_count * total_count;
 
-        BinaryBrain {
+        Ok(BinaryBrain {
             weight_value_store: repeat_with(|| rng.next_u64()).take((weight_count * 2) / 64).collect(),
             act: act,
             input_count: input_count,
             output_count: output_count,
-        }
+        })
     }
 
     #[inline]
@@ -120,6 +129,13 @@ impl BinaryBrain {
     }
 }
 
+#[derive(Debug)]
+enum BinaryBrainError {
+    TotalNotDivisbleBy64,
+    InputOutputAboveTotal,
+}
+
+
 #[cfg(test)]
 mod benches {
     use test::{Bencher};
@@ -131,7 +147,7 @@ mod benches {
     #[bench]
     fn cycle_64_64_64(b: &mut Bencher) {
         let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
-        let mut nn = BinaryBrain::new(64, 64, 192, &mut rng);
+        let mut nn = BinaryBrain::new(64, 64, 192, &mut rng).unwrap();
         let input = [u8::MAX; 64];
 
         b.iter(|| {
@@ -142,7 +158,7 @@ mod benches {
     #[bench]
     fn cycle_64_512_64(b: &mut Bencher) {
         let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
-        let mut nn = BinaryBrain::new(64, 64, 640, &mut rng);
+        let mut nn = BinaryBrain::new(64, 64, 640, &mut rng).unwrap();
         let input = [u8::MAX; 64];
 
         b.iter(|| {
@@ -153,7 +169,7 @@ mod benches {
     #[bench]
     fn cycle_64_4096_64(b: &mut Bencher) {
         let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
-        let mut nn = BinaryBrain::new(64, 64, 4224, &mut rng);
+        let mut nn = BinaryBrain::new(64, 64, 4224, &mut rng).unwrap();
         let input = [u8::MAX; 64];
 
         b.iter(|| {
@@ -164,7 +180,7 @@ mod benches {
     // #[bench]
     // fn cycle_64_131072_64(b: &mut Bencher) {
     //     let mut rng = Xoshiro256StarStar::seed_from_u64(1234);
-    //     let mut nn = BinaryBrain::new(64, 64, 131200, &mut rng);
+    //     let mut nn = BinaryBrain::new(64, 64, 131200, &mut rng).unwrap();
     //     let input = [u8::MAX; 64];
 
     //     b.iter(|| {
