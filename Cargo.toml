@@ -1,14 +1,12 @@
 [package]
-name = "binary-neural-net"
-version = "0.1.0"
+name = "binary-brain"
+version = "0.2.0"
 authors = ["Pjottos <->"]
 edition = "2018"
 
 
 [dependencies]
-static_assertions = "1.1"
 rand_xoshiro = "0.4"
-
 
 [profile.bench]
 debug = true
