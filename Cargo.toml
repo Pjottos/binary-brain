@@ -6,7 +6,11 @@ edition = "2018"
 
 
 [dependencies]
+rand = "0.7"
 rand_xoshiro = "0.4"
+
+[dev_dependencies]
+gym = "2.2"
 
 [profile.bench]
 debug = true
