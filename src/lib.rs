@@ -7,6 +7,8 @@ use rand::prelude::*;
 
 pub type Result<T> = std::result::Result<T, BinaryBrainError>;
 
+pub mod train;
+
 #[derive(Debug)]
 pub struct BinaryBrain {
     weight_matrix: Vec<u64>,
@@ -122,9 +124,9 @@ mod benches {
     use crate::BinaryBrain;
 
     #[bench]
-    fn cycle_64_64_64(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(64, 64, 192).unwrap();
-        let input = [u8::MAX; 64];
+    fn cycle_64(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 64).unwrap();
+        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
@@ -133,9 +135,9 @@ mod benches {
     } 
 
     #[bench]
-    fn cycle_64_512_64(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(64, 64, 640).unwrap();
-        let input = [u8::MAX; 64];
+    fn cycle_512(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 512).unwrap();
+        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
@@ -144,9 +146,9 @@ mod benches {
     }
 
     #[bench]
-    fn cycle_64_4096_64(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(64, 64, 4224).unwrap();
-        let input = [u8::MAX; 64];
+    fn cycle_4096(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 4096).unwrap();
+        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
@@ -155,9 +157,9 @@ mod benches {
     }
 
     #[bench]
-    fn cycle_64_32768_64(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(64, 64, 32896).unwrap();
-        let input = [u8::MAX; 64];
+    fn cycle_32768(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 32768).unwrap();
+        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
