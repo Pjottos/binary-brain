@@ -1,22 +1,21 @@
 # binary-brain
-A densely connected neural net that has every neuron connected to every other neuron with binary (-1/+1) weights.
+A densely connected neural net that has every neuron connected to every other neuron with binary (-1/+1) weights.  
+It is different from typical neural networks in that no forward pass is defined. 
+Instead, it uses the concept of cycles, where every cycle updates the neurons once.
+This means the training algorithm is responsible for figuring out the way the input should propagate through the network, which makes this a very generic solution to machine learning tasks.
 
 ### Usage
-Currently, only the evaluation logic is implemented and the brain cannot be trained yet.
-To benchmark the evaluation:
+Install rust - https://rustup.rs/   
+If you want to run OpenAI gym examples, follow the install instructions for gym-rs - https://github.com/MrRobb/gym-rs
+```
+rustup override set nightly
+cargo run --example <example>
+```
+For benchmarks:
 ```
 rustup override set nightly
 RUSTFLAGS="-C target-cpu=native" cargo bench
 ```
-Setting target-cpu=native greatly improves performance on modern cpus (only tested on x86_64)
-
-To see a random brain in action:
-```
-rustup override set nightly
-RUSTFLAGS="-C target-cpu=native" cargo run --example <example>
-```
-
-This project is not meant to be used as a library but it is possible.
 
 ### Performance
 Benchmark results on an i7-4790k:

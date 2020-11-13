@@ -9,7 +9,7 @@ pub type Result<T> = std::result::Result<T, BinaryBrainError>;
 
 pub mod train;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BinaryBrain {
     weight_matrix: Vec<u64>,
     values: Vec<u64>,
@@ -42,6 +42,35 @@ impl BinaryBrain {
         })
     }
 
+    pub fn from_template(template: &BinaryBrain) -> BinaryBrain {
+        Self::new(
+            template.input_count,
+            template.output_count,
+            template.act.len()
+        ).unwrap()
+    }
+
+    pub fn with_parameters(weight_matrix: Vec<u64>, activations: Vec<u8>, input_count: usize, output_count: usize) -> Result<BinaryBrain> {
+        let total_count = activations.len();
+        if total_count % 64 != 0 {
+            return Err(BinaryBrainError::TotalNotDivisbleBy64);
+        }
+        if input_count + output_count > total_count {
+            return Err(BinaryBrainError::InputOutputAboveTotal);
+        }
+        if weight_matrix.len() != (total_count * total_count) / 64 {
+            return Err(BinaryBrainError::InvalidWeightActivationCombo);
+        }
+
+        Ok(BinaryBrain {
+            weight_matrix: weight_matrix,
+            values: vec![0; total_count / 64],
+            act: activations,
+            input_count: input_count,
+            output_count: output_count,
+        })
+    }
+
     #[inline]
     pub fn cycle(&mut self, input: &[u8], output: &mut Vec<bool>) -> Result<()> {
         if input.len() != self.input_count {
@@ -51,9 +80,10 @@ impl BinaryBrain {
         output.clear();
         output.reserve(self.output_count);
         
+        // update the values of each neuron
         let neuron_count = self.act.len();
         for i in (0..neuron_count).step_by(64) {
-            // write the values of connections in batches to reduce memory i/o
+            // write the values in batches to reduce memory i/o
             let mut batch: u64 = 0;
 
             // construct the batch by evaluating 64 neurons
@@ -108,6 +138,26 @@ impl BinaryBrain {
 
         sum
     }
+
+    #[inline]
+    pub fn weights(&self) -> &[u64] {
+        self.weight_matrix.as_slice()
+    }
+
+    #[inline]
+    pub fn activations(&self) -> &[u8] {
+        self.act.as_slice()
+    }
+
+    #[inline]
+    pub fn input_count(&self) -> usize {
+        self.input_count
+    }
+
+    #[inline]
+    pub fn output_count(&self) -> usize {
+        self.output_count
+    }
 }
 
 #[derive(Debug)]
@@ -115,6 +165,10 @@ pub enum BinaryBrainError {
     TotalNotDivisbleBy64,
     InputOutputAboveTotal,
     WrongInputShape,
+    ZeroPopSize,
+    InvalidProbability(f64),
+    ZeroTournamentSize,
+    InvalidWeightActivationCombo,
 }
 
 

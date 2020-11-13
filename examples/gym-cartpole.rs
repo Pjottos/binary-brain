@@ -2,35 +2,85 @@ extern crate gym;
 extern crate binary_brain;
 
 use binary_brain::BinaryBrain;
+use binary_brain::train;
 
+// model params
 const INPUT_COUNT: usize = 4;
 const OUTPUT_COUNT: usize = 1;
 const TOTAL_COUNT: usize = 64;
 
+// genetic trainer params
+const POPULATION_SIZE: usize = 256;
+const TOURNAMENT_SIZE: usize = 8;
+const MUTATION_CHANCE: f64 = 0.015;
+const CROSSOVER_SWITCH_CHANCE: f64 = 0.4;
+
+const MAX_GENERATIONS: usize = 32;
+
 fn main() {
+    let model = BinaryBrain::new(INPUT_COUNT, OUTPUT_COUNT, TOTAL_COUNT).unwrap();
+    let mut trainer = train::Genetic::new(model, POPULATION_SIZE, TOURNAMENT_SIZE, MUTATION_CHANCE, CROSSOVER_SWITCH_CHANCE).unwrap();
+    
+    println!("starting training...");
+
+    for i in 0..MAX_GENERATIONS {
+        // you could also use trainer.evaluate_parallel if you have a more expensive simulation
+        // since the cartpole environment is very cheap to simulate, it's faster to run single-threaded
+        let top_fitness = trainer.evaluate(|brain| {
+            let gym = gym::GymClient::default();
+            let env = gym.make("CartPole-v1");
+            let mut input = map_observation(env.reset().unwrap());
+            let mut output = Vec::with_capacity(OUTPUT_COUNT);
+            let mut fitness = 0.0;
+
+            loop {
+                brain.cycle(&input, &mut output).unwrap();
+                let action = if output[0] {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
+                let state = env.step(&action).unwrap();
+                input = map_observation(state.observation);
+                if state.is_done {
+                    break;
+                }
+                fitness += state.reward;
+            }
+
+            env.close();
+
+            fitness
+        });
+
+        println!("generation {} finished, top fitness: {}", i, top_fitness);
+
+        // the enviroment reports it is done above this fitness
+        // so training any further would not reinforce correct behaviour anymore
+        if top_fitness < 499.0 {
+            trainer.breed();
+        } else {
+            break;
+        }
+    }
+
+    println!("training finished, rendering fittest individual...");
+
+    let mut fittest = trainer.clone_fittest().0;
+
     let gym = gym::GymClient::default();
     let env = gym.make("CartPole-v1");
-    let mut brain = BinaryBrain::new(INPUT_COUNT, OUTPUT_COUNT, TOTAL_COUNT).unwrap();
-
-    
-    let mut input = map_observation(env.reset().expect("unable to reset"));
+    let mut input = map_observation(env.reset().unwrap());
     let mut output = vec![];
-
+    
     loop {
-        println!("feeding input: {:?}", input);
-        println!("BRAIN: {:?}", brain);
-        brain.cycle(&input, &mut output).unwrap();
-        println!("got output: {:?}", output);
+        fittest.cycle(&input, &mut output).unwrap();
         let action = if output[0] {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
         let state = env.step(&action).unwrap();
-        input = map_observation(state.observation);
         env.render();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        input = map_observation(state.observation);
         if state.is_done {
             break;
         }
     }
 
-	env.close();
 }
 
 fn map_observation(observation: gym::SpaceData) -> [u8; INPUT_COUNT] {
