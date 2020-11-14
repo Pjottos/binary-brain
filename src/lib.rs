@@ -72,7 +72,7 @@ impl BinaryBrain {
     }
 
     #[inline]
-    pub fn cycle(&mut self, input: &[u8], output: &mut Vec<bool>) -> Result<()> {
+    pub fn cycle(&mut self, input: &[u8], output: &mut Vec<(bool, i32)>) -> Result<()> {
         if input.len() != self.input_count {
             return Err(BinaryBrainError::WrongInputShape);
         }
@@ -103,7 +103,7 @@ impl BinaryBrain {
                 let output_start = neuron_count - self.output_count;
                 if j >= output_start {
                     // we iterate the neurons sequentially so this works
-                    output.push(fire);
+                    output.push((fire, sum));
                 }
             }
             

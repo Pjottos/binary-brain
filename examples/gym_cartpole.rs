@@ -9,23 +9,25 @@ const INPUT_COUNT: usize = 4;
 const OUTPUT_COUNT: usize = 1;
 const TOTAL_COUNT: usize = 64;
 
+const CYCLE_COUNT: usize = 1;
+
 // genetic trainer params
-const POPULATION_SIZE: usize = 256;
-const TOURNAMENT_SIZE: usize = 8;
-const MUTATION_CHANCE: f64 = 0.015;
-const CROSSOVER_SWITCH_CHANCE: f64 = 0.4;
+const POPULATION_SIZE: usize = 196;
+const TOURNAMENT_SIZE: usize = 4;
+const MUTATION: usize = 7; // mutation per parameter: p = 0.5^7
+const PARENT_COUNT: usize = 2;
+const WEIGHT_CROSSOVERS: usize = (TOTAL_COUNT * TOTAL_COUNT) / 512;
+const ACTIVATION_CROSSOVERS: usize = TOTAL_COUNT / 8; 
 
 const MAX_GENERATIONS: usize = 32;
 
 fn main() {
     let model = BinaryBrain::new(INPUT_COUNT, OUTPUT_COUNT, TOTAL_COUNT).unwrap();
-    let mut trainer = train::Genetic::new(model, POPULATION_SIZE, TOURNAMENT_SIZE, MUTATION_CHANCE, CROSSOVER_SWITCH_CHANCE).unwrap();
+    let mut trainer = train::Genetic::new(model, POPULATION_SIZE, TOURNAMENT_SIZE, MUTATION, PARENT_COUNT, WEIGHT_CROSSOVERS, ACTIVATION_CROSSOVERS).unwrap();
     
     println!("starting training...");
 
     for i in 0..MAX_GENERATIONS {
-        // you could also use trainer.evaluate_parallel if you have a more expensive simulation
-        // since the cartpole environment is very cheap to simulate, it's faster to run single-threaded
         let top_fitness = trainer.evaluate(|brain| {
             let gym = gym::GymClient::default();
             let env = gym.make("CartPole-v1");
@@ -34,8 +36,10 @@ fn main() {
             let mut fitness = 0.0;
 
             loop {
-                brain.cycle(&input, &mut output).unwrap();
-                let action = if output[0] {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
+                for _ in 0..CYCLE_COUNT {
+                    brain.cycle(&input, &mut output).unwrap();
+                }
+                let action = if output[0].0 {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
                 let state = env.step(&action).unwrap();
                 input = map_observation(state.observation);
                 if state.is_done {
@@ -71,7 +75,7 @@ fn main() {
     
     loop {
         fittest.cycle(&input, &mut output).unwrap();
-        let action = if output[0] {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
+        let action = if output[0].0 {gym::SpaceData::DISCRETE(0)} else {gym::SpaceData::DISCRETE(1)};
         let state = env.step(&action).unwrap();
         env.render();
         std::thread::sleep(std::time::Duration::from_millis(20));
