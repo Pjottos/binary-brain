@@ -1,5 +1,5 @@
 use crate::*;
-use rayon::prelude::*;
+// use rayon::prelude::*;
 use rand::distributions::{Distribution, Uniform};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use std::cmp::Ordering;

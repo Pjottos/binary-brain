@@ -2,8 +2,14 @@
 
 extern crate test;
 
-use std::iter::repeat_with;
 use rand::prelude::*;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::iter::repeat_with;
+use std::fs;
+use std::io;
+use std::io::prelude::*;
+use std::path::Path;
+
 
 pub type Result<T> = std::result::Result<T, BinaryBrainError>;
 
@@ -69,6 +75,48 @@ impl BinaryBrain {
             input_count: input_count,
             output_count: output_count,
         })
+    }
+
+    pub fn from_file<P: AsRef<Path>>(path: P) -> io::Result<BinaryBrain> {
+        let mut file = fs::File::open(path)?;
+
+        let input_count = file.read_u64::<LittleEndian>()? as usize;
+        let output_count = file.read_u64::<LittleEndian>()? as usize;
+        let total_count = file.read_u64::<LittleEndian>()? as usize;
+
+        let mut weights = vec![0u64; (total_count * total_count) / 64]; 
+        file.read_u64_into::<LittleEndian>(weights.as_mut_slice())?;
+
+        let mut act = vec![0u8; total_count];
+        file.read_exact(act.as_mut_slice())?;
+
+        Ok(BinaryBrain {
+            weight_matrix: weights,
+            values: vec![0; total_count / 64],
+            act: act,
+            input_count: input_count,
+            output_count: output_count,
+        })
+    }
+
+    pub fn write_to_file<P: AsRef<Path>>(&self, target: P) -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(target)?;
+        
+        file.write_u64::<LittleEndian>(self.input_count as u64)?;
+        file.write_u64::<LittleEndian>(self.output_count as u64)?;
+        file.write_u64::<LittleEndian>(self.act.len() as u64)?;
+
+        for chunk in self.weight_matrix.iter() {
+            file.write_u64::<LittleEndian>(*chunk)?;
+        }
+
+        file.write_all(self.act.as_slice())?;
+        
+        Ok(())
     }
 
     #[inline]
