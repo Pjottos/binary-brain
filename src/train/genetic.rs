@@ -1,25 +1,21 @@
 use crate::*;
+use crate::util::Xoshiro128PlusPlusAvx2;
 // use rayon::prelude::*;
 use rand::distributions::{Distribution, Uniform};
-use rand_xoshiro::Xoshiro256PlusPlus;
 use std::cmp::Ordering;
-use std::iter;
+use std::mem::transmute;
 
 pub struct Genetic {
     population: Vec<(BinaryBrain, f64)>,
-    p_mutate: usize,
-    parent_count: usize,
-    weight_crossovers: usize,
-    act_crossovers: usize,
+    p_mutate: u8,
     pop_select: Uniform<usize>,
     tournament_size: usize,
-    rng: Xoshiro256PlusPlus,
 }
 
 impl Genetic {
-    pub fn new(initial: BinaryBrain, pop_size: usize, tournament_size: usize, mutation: usize, parent_count: usize, weight_crossovers: usize, act_crossovers: usize) -> Result<Genetic> {
-        if pop_size == 0 {
-            return Err(BinaryBrainError::ZeroPopSize);
+    pub fn new(initial: BinaryBrain, pop_size: usize, tournament_size: usize, mutation: u8) -> Result<Genetic> {
+        if pop_size < 2 {
+            return Err(BinaryBrainError::InvalidPopSize);
         }
         if tournament_size == 0 {
             return Err(BinaryBrainError::ZeroTournamentSize);
@@ -34,16 +30,12 @@ impl Genetic {
         Ok(Genetic {
             population: pop,
             p_mutate: mutation,
-            parent_count: parent_count,
-            weight_crossovers: weight_crossovers,
-            act_crossovers: act_crossovers,
             pop_select: Uniform::new(0, pop_size),
             tournament_size: tournament_size,
-            rng: Xoshiro256PlusPlus::from_entropy(),
         })
     }
 
-    pub fn evaluate<F: FnMut(&mut BinaryBrain) -> f64 + Send + Sync>(&mut self, mut fitness: F) -> f64 {
+    pub fn evaluate<F: FnMut(&mut BinaryBrain) -> f64>(&mut self, mut fitness: F) -> f64 {
         self.population.iter_mut().for_each(|p| {    
             p.1 = fitness(&mut p.0);
         });
@@ -59,104 +51,83 @@ impl Genetic {
     //     self.population.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)).unwrap().1
     // }
 
-    pub fn breed(&mut self) {        
-        let pop_count = self.population.len();
-        let weight_count = self.population[0].0.weights().len() * 64;
+    pub fn breed(&mut self) {
+        let mut new_pop = Vec::with_capacity(self.population.len());
+
+        let weight_chunk_count = self.population[0].0.weights().len();
         let act_count = self.population[0].0.activations().len();
-        
-        // needed because we cannot mutate self while borrowing the brains
-        let mut rng = self.rng.clone();
-        self.rng.jump();
+        let input_count = self.population[0].0.input_count();
+        let output_count = self.population[0].0.output_count();
 
-        let weight_crossover_dist = Uniform::new(0, weight_count);
-        let act_crossover_dist = Uniform::new(0, act_count);
+        let mut rng = thread_rng();
+        let mut tmp = [0; 64];
+        rng.fill_bytes(&mut tmp);
+        let mut bulk_rng = Xoshiro128PlusPlusAvx2::new(tmp);
 
-        self.population = iter::repeat_with(|| {
-            let parents: Vec<&BinaryBrain> = iter::repeat_with(|| {
-                iter::repeat_with(|| {
-                    let idx = self.pop_select.sample(&mut rng);
-                    (idx, self.population[idx].1)
-                })
-                    .take(self.tournament_size)
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
-                    .map(|x| &self.population[x.0].0)
-                    .unwrap()
-            }).take(self.parent_count).collect();
-
-            let mut current_parent = 0;
-            let mut crossovers: Vec<usize> = weight_crossover_dist.sample_iter(&mut rng)
-                .take(self.weight_crossovers)
-                .collect();
-            crossovers.sort_unstable();
-            crossovers.dedup();
-            crossovers.reverse();
-            let mut next_crossover = crossovers.pop().unwrap_or(usize::MAX);
-
-            let weights = (0..weight_count / 64).map(|i| {
-                let mut seg = parents[current_parent].weights()[i];
-
-                if i * 64 >= next_crossover {
-                    let idx = next_crossover as u32 % 64;
-                    // clear the bits [idx, 64)
-                    let mask = u64::MAX.overflowing_shr(64 - idx).0;
-                    seg &= mask;
-
-                    // get the corresponding bits from the next parent
-                    current_parent = (current_parent + 1) % self.parent_count;
-                    let seg2 = parents[current_parent].weights()[i];
-                    seg |= seg2 & !mask;
-
-                    next_crossover = crossovers.pop().unwrap_or(usize::MAX);
-                }
-
-                if self.p_mutate != 0 {
-                    let mut mutate = rng.next_u64();
-                    for _ in 1..self.p_mutate {
-                        mutate &= rng.next_u64();
-                    }
-                    seg ^= mutate;
-                }
-
-                seg
-            }).collect();
-
-            crossovers = act_crossover_dist.sample_iter(&mut rng)
-                .take(self.act_crossovers)
-                .collect();
-            crossovers.sort_unstable();
-            crossovers.dedup();
-            crossovers.reverse();
-
-            next_crossover = crossovers.pop().unwrap_or(usize::MAX);
-
-            let activations = (0..act_count).map(|i| { 
-                if i == next_crossover {
-                    current_parent = (current_parent + 1) % self.parent_count;
-                    next_crossover = crossovers.pop().unwrap_or(usize::MAX);
-                }
-
-                let mut act = parents[current_parent].activations()[i];
-                
-                if self.p_mutate != 0 {
-                    // check p_mutate random bits and if any of them is set, apply a mutation.
-                    // this corresponds to a probability of 0.5^p_mutate
-                    let random = rng.next_u64();
-                    let r = random >> (64 - self.p_mutate);
-                    if r.count_ones() == 0 {
-                        // use a (most likely) different part of the previously generated random number
-                        // this is to save a call to rng
-                        act = random as u8;
+        let mut run_tournament = || {
+            let mut fit = [f64::MIN, f64::MIN];
+            let mut result = [&self.population[0].0, &self.population[0].0];
+            for _ in 0..self.tournament_size {
+                let idx = self.pop_select.sample(&mut rng);
+                let candidate = &self.population[idx];
+                for i in 0..2 {
+                    if candidate.1 > fit[i] {
+                        fit[i] = candidate.1;
+                        result[i] = &candidate.0;
+                        break;
                     }
                 }
+            }
 
-                act
-            }).collect();
+            result
+        };
+
+        for _ in 0..self.population.len() / 2 {
+            let parents = run_tournament();
             
-            (BinaryBrain::with_parameters(weights, activations, parents[0].input_count(), parents[0].output_count()).unwrap(), f64::MIN)
-        }).take(pop_count).collect();
-    }
+            let mut weights = (Vec::with_capacity(weight_chunk_count), Vec::with_capacity(weight_chunk_count));
+            let mut activations = (Vec::with_capacity(act_count), Vec::with_capacity(act_count));
 
-    pub fn clone_fittest(&self) -> (BinaryBrain, f64) {
+            for i in (0..weight_chunk_count).step_by(4) {
+                let mutations = bulk_rng.next_with_bias(self.p_mutate);
+                let crossover = bulk_rng.next();
+                
+                for j in 0..4 {
+                    let a = parents[0].weights()[i + j].0;
+                    let b = parents[1].weights()[i + j].0;
+                    
+                    weights.0.push(NeuronChunk(((a & !crossover[j]) | (b & crossover[j])) ^ mutations[j]));
+                    weights.1.push(NeuronChunk(((a & crossover[j]) | (b & !crossover[j])) ^ mutations[j]));
+                }
+            }
+
+            for i in (0..act_count).step_by(32) {
+                let mutate_triggers: [i8; 32] = unsafe { transmute(bulk_rng.next()) };
+                let mutations: [i8; 32] = unsafe { transmute(bulk_rng.next()) };
+                let crossover: [i8; 32] = unsafe { transmute(bulk_rng.next()) };
+
+                for j in 0..32 {
+                    if mutate_triggers[j] > 127 - self.p_mutate as i8 {
+                        activations.0.push(Activation(mutations[j]));
+                        activations.1.push(Activation(mutations[(j + 1) % 32]));
+                    } else if crossover[j] > -1 {
+                        activations.0.push(parents[1].activations()[i + j]);
+                        activations.1.push(parents[0].activations()[i + j]);
+                    } else {
+                        activations.0.push(parents[0].activations()[i + j]);
+                        activations.1.push(parents[1].activations()[i + j]);
+                    }
+                }
+            }
+
+            new_pop.push((BinaryBrain::with_parameters(weights.0, activations.0, input_count, output_count).unwrap(), f64::MIN));
+            new_pop.push((BinaryBrain::with_parameters(weights.1, activations.1, input_count, output_count).unwrap(), f64::MIN));
+        }
+
+        self.population = new_pop;
+    }
+        
+    pub fn clone_fittest(self) -> (BinaryBrain, f64) {
         let target = self.population.iter().max_by(
             |a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)
         ).unwrap();
@@ -164,6 +135,7 @@ impl Genetic {
         (*target).clone()
     }
 }
+
 
 #[cfg(test)]
 mod benches {
@@ -173,10 +145,10 @@ mod benches {
     // the genetic trainer has a linear time complexity with regard to popsize, so only test with popsize 1
 
     #[bench]
-    fn genetic_breed_4096_8_7_2_32768_256(b: &mut Bencher) {
+    fn genetic_breed_4096_16(b: &mut Bencher) {
         let brain = BinaryBrain::new(32, 32, 4096).unwrap();
-        let mut trainer = Genetic::new(brain, 1, 4096, 8, 7, 32768, 256).unwrap();
-        let mut rng = Xoshiro256PlusPlus::from_entropy();
+        let mut trainer = Genetic::new(brain, 2, 16, 1).unwrap();
+        let mut rng = thread_rng();
         let dist = Uniform::new(-128.0, 128.0);
         b.iter(|| {
             trainer.evaluate(|_| {
@@ -188,10 +160,10 @@ mod benches {
     }
 
     #[bench]
-    fn genetic_breed_4096_8_0_2_1048576_4096(b: &mut Bencher) {
-        let brain = BinaryBrain::new(32, 32, 4096).unwrap();
-        let mut trainer = Genetic::new(brain, 1, 8, 0, 2, 32768, 256).unwrap();
-        let mut rng = Xoshiro256PlusPlus::from_entropy();
+    fn genetic_breed_512_16(b: &mut Bencher) {
+        let brain = BinaryBrain::new(32, 32, 512).unwrap();
+        let mut trainer = Genetic::new(brain, 2, 16, 1).unwrap();
+        let mut rng = thread_rng();
         let dist = Uniform::new(-128.0, 128.0);
         b.iter(|| {
             trainer.evaluate(|_| {
@@ -203,10 +175,10 @@ mod benches {
     }
 
     #[bench]
-    fn genetic_breed_4096_8_32_2_0_0(b: &mut Bencher) {
-        let brain = BinaryBrain::new(32, 32, 4096).unwrap();
-        let mut trainer = Genetic::new(brain, 1, 8, 32, 2, 0, 0).unwrap();
-        let mut rng = Xoshiro256PlusPlus::from_entropy();
+    fn genetic_breed_64_16(b: &mut Bencher) {
+        let brain = BinaryBrain::new(32, 32, 64).unwrap();
+        let mut trainer = Genetic::new(brain, 2, 16, 1).unwrap();
+        let mut rng = thread_rng();
         let dist = Uniform::new(-128.0, 128.0);
         b.iter(|| {
             trainer.evaluate(|_| {

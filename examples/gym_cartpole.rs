@@ -1,8 +1,7 @@
 extern crate gym;
 extern crate binary_brain;
 
-use binary_brain::BinaryBrain;
-use binary_brain::train;
+use binary_brain::{train, BinaryBrain, Activation};
 use std::io;
 
 // model params
@@ -14,13 +13,10 @@ const CYCLE_COUNT: usize = 1;
 
 // genetic trainer params
 const POPULATION_SIZE: usize = 256;
-const TOURNAMENT_SIZE: usize = 4;
-const MUTATION: usize = 7; // mutation per parameter: p = 0.5^7
-const PARENT_COUNT: usize = 2;
-const WEIGHT_CROSSOVERS: usize = (TOTAL_COUNT * TOTAL_COUNT) / 512;
-const ACTIVATION_CROSSOVERS: usize = TOTAL_COUNT / 8; 
+const TOURNAMENT_SIZE: usize = 16;
+const MUTATION: u8 = 2; // mutation per parameter: p = 2/256
 
-const MAX_GENERATIONS: usize = 32;
+const MAX_GENERATIONS: usize = 64;
 
 fn main() {
     println!("pretrained brain to load (leave empty to train):");
@@ -33,13 +29,14 @@ fn main() {
     if response.is_empty() {
         is_trained = true;
         let initial = BinaryBrain::new(INPUT_COUNT, OUTPUT_COUNT, TOTAL_COUNT).unwrap();
-        let mut trainer = train::Genetic::new(initial, POPULATION_SIZE, TOURNAMENT_SIZE, MUTATION, PARENT_COUNT, WEIGHT_CROSSOVERS, ACTIVATION_CROSSOVERS).unwrap();
+        let mut trainer = train::Genetic::new(initial, POPULATION_SIZE, TOURNAMENT_SIZE, MUTATION).unwrap();
+        
         println!("starting training...");
+        let gym = gym::GymClient::default();
+        let env = gym.make("CartPole-v1");
         
         for i in 0..MAX_GENERATIONS {
             let top_fitness = trainer.evaluate(|brain| {
-                let gym = gym::GymClient::default();
-                let env = gym.make("CartPole-v1");
                 let mut input = map_observation(env.reset().unwrap());
                 let mut output = Vec::with_capacity(OUTPUT_COUNT);
                 let mut fitness = 0.0;
@@ -57,8 +54,6 @@ fn main() {
                     }
                 }
     
-                env.close();
-    
                 fitness
             });
     
@@ -75,7 +70,7 @@ fn main() {
         }
         
         println!("training stopped, using fittest brain of last generation");
-        
+        env.close();
         model = trainer.clone_fittest().0;
     } else {
         is_trained = false;
@@ -124,26 +119,26 @@ fn main() {
     }
 }
 
-fn map_observation(observation: gym::SpaceData) -> [u8; INPUT_COUNT] {
+fn map_observation(observation: gym::SpaceData) -> [Activation; INPUT_COUNT] {
     let vec = observation.get_box().unwrap();
-    
+
     [
         // cart position (negative is left, positive is right)
         // the allowed range is [-4.8, 4.8] but since the cart is almost never
-        // out that far, we prefer better resolution for the lower (absolute) numbers
-        (((vec[0] + 2.4) / 4.8) * 255.0) as u8,
+        // out that far, we prefer better resolution near the center
+        Activation(((vec[0] / 2.4) * 255.0) as i8),
 
         // cart velocity (- left, + right)
         // theoretically this has infinite range but practically it will
         // never go outside this range, so long as the environment is not forced to continue
-        (((vec[1] + 3.0) / 6.0) * 255.0) as u8,
+        Activation(((vec[1] / 3.0) * 255.0) as i8),
         
         // pole angle in radians (- left, + right)
         // this is the allowed range, if the pole tips outside it the env terminates
-        (((vec[2] + 0.418) / 0.836) * 255.0) as u8,
+        Activation(((vec[2] / 0.418) * 255.0) as i8),
         
         // pole angular velocity
         // again, technically infinite
-        (((vec[3] + 4.5) / 9.0) * 255.0) as u8,
+        Activation(((vec[3] / 4.5) * 255.0) as i8),
     ]
 }

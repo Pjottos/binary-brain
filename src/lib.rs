@@ -1,4 +1,5 @@
 #![feature(test)]
+#![feature(vec_into_raw_parts)]
 
 extern crate test;
 
@@ -7,44 +8,49 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::iter::repeat_with;
 use std::fs;
 use std::io;
-use std::io::prelude::*;
 use std::path::Path;
+use std::mem::size_of;
 
 
 pub type Result<T> = std::result::Result<T, BinaryBrainError>;
 
 pub mod train;
+mod util;
 
 #[derive(Debug, Clone)]
 pub struct BinaryBrain {
-    weight_matrix: Vec<u64>,
-    values: Vec<u64>,
-    act: Vec<u8>,
+    weight_matrix: Vec<NeuronChunk>,
+    values: Vec<NeuronChunk>,
+    act: Vec<Activation>,
     input_count: usize,
     output_count: usize,
+    neuron_count: usize,
 }
 
 impl BinaryBrain {
     pub fn new(input_count: usize, output_count: usize, total_count: usize) -> Result<BinaryBrain> {
-        if total_count % 64 != 0 {
-            return Err(BinaryBrainError::TotalNotDivisbleBy64);
+        if total_count % (size_of::<NeuronChunk>() * 8) != 0 {
+            return Err(BinaryBrainError::TotalNotDivisbleByChunkSize);
         }
         if input_count + output_count > total_count {
             return Err(BinaryBrainError::InputOutputAboveTotal);
         }
 
         let mut rng = thread_rng();
-        let mut act = vec![0; total_count];
-        rng.fill_bytes(act.as_mut_slice());
+        let mut act = vec![Activation::default(); total_count];
+        for i in 0..act.len() {
+            act[i].0 = rng.gen();
+        }
 
         let weight_count = total_count * total_count;
 
         Ok(BinaryBrain {
-            weight_matrix: repeat_with(|| rng.next_u64()).take(weight_count / 64).collect(),
-            values: vec![0; total_count / 64],
+            weight_matrix: repeat_with(|| NeuronChunk(rng.gen()) ).take(weight_count / (size_of::<NeuronChunk>() * 8)).collect(),
+            values: vec![NeuronChunk::default(); total_count / (size_of::<NeuronChunk>() * 8)],
             act: act,
             input_count: input_count,
             output_count: output_count,
+            neuron_count: total_count,
         })
     }
 
@@ -56,24 +62,22 @@ impl BinaryBrain {
         ).unwrap()
     }
 
-    pub fn with_parameters(weight_matrix: Vec<u64>, activations: Vec<u8>, input_count: usize, output_count: usize) -> Result<BinaryBrain> {
+    pub fn with_parameters(weight_matrix: Vec<NeuronChunk>, activations: Vec<Activation>, input_count: usize, output_count: usize) -> Result<BinaryBrain> {
         let total_count = activations.len();
-        if total_count % 64 != 0 {
-            return Err(BinaryBrainError::TotalNotDivisbleBy64);
-        }
         if input_count + output_count > total_count {
             return Err(BinaryBrainError::InputOutputAboveTotal);
         }
-        if weight_matrix.len() != (total_count * total_count) / 64 {
+        if weight_matrix.len() != (total_count * total_count) / (size_of::<NeuronChunk>() * 8) {
             return Err(BinaryBrainError::InvalidWeightActivationCombo);
         }
 
         Ok(BinaryBrain {
             weight_matrix: weight_matrix,
-            values: vec![0; total_count / 64],
+            values: vec![NeuronChunk::default(); total_count / (size_of::<NeuronChunk>() * 8)],
             act: activations,
             input_count: input_count,
             output_count: output_count,
+            neuron_count: total_count,
         })
     }
 
@@ -84,18 +88,26 @@ impl BinaryBrain {
         let output_count = file.read_u64::<LittleEndian>()? as usize;
         let total_count = file.read_u64::<LittleEndian>()? as usize;
 
-        let mut weights = vec![0u64; (total_count * total_count) / 64]; 
-        file.read_u64_into::<LittleEndian>(weights.as_mut_slice())?;
+        let weight_chunks = (total_count * total_count) / (size_of::<NeuronChunk>() * 8);
+        let mut weights = Vec::with_capacity(weight_chunks);
+        for _ in 0..weight_chunks {
+            let chunk = file.read_u64::<LittleEndian>()?;
+            weights.push(NeuronChunk(chunk));
+        }
 
-        let mut act = vec![0u8; total_count];
-        file.read_exact(act.as_mut_slice())?;
+        let mut act = Vec::with_capacity(total_count);
+        for _ in 0..total_count {
+            let chunk = file.read_i8()?;
+            act.push(Activation(chunk));
+        }
 
         Ok(BinaryBrain {
             weight_matrix: weights,
-            values: vec![0; total_count / 64],
+            values: vec![NeuronChunk::default(); total_count / (size_of::<NeuronChunk>() * 8)],
             act: act,
             input_count: input_count,
             output_count: output_count,
+            neuron_count: total_count,
         })
     }
 
@@ -108,92 +120,77 @@ impl BinaryBrain {
         
         file.write_u64::<LittleEndian>(self.input_count as u64)?;
         file.write_u64::<LittleEndian>(self.output_count as u64)?;
-        file.write_u64::<LittleEndian>(self.act.len() as u64)?;
+        file.write_u64::<LittleEndian>(self.neuron_count as u64)?;
 
         for chunk in self.weight_matrix.iter() {
-            file.write_u64::<LittleEndian>(*chunk)?;
+            file.write_u64::<LittleEndian>(chunk.0)?;
         }
 
-        file.write_all(self.act.as_slice())?;
+        for chunk in self.act.iter() {
+            file.write_i8(chunk.0)?;
+        }
         
         Ok(())
     }
 
     #[inline]
-    pub fn cycle(&mut self, input: &[u8], output: &mut Vec<(bool, i32)>) -> Result<()> {
+    pub fn cycle(&mut self, input: &[Activation], output: &mut Vec<(bool, i32)>) -> Result<()> {
         if input.len() != self.input_count {
             return Err(BinaryBrainError::WrongInputShape);
         }
         
         output.clear();
-        output.reserve(self.output_count);
-        
-        // update the values of each neuron
-        let neuron_count = self.act.len();
-        for i in (0..neuron_count).step_by(64) {
-            // write the values in batches to reduce memory i/o
-            let mut batch: u64 = 0;
+        output.reserve(self.output_count); 
+        let output_start = self.act.len() - self.output_count;
 
-            // construct the batch by evaluating 64 neurons
-            for j in i..i + 64 {
-                // index will definitely be within bounds
-                let mut sum = unsafe { self.calc_sum(j) };
-                 
-                if j < self.input_count {
-                    sum += input[j] as i32;
-                }
-                let fire = sum >= self.act[j] as i32;
-                
-                // set bits in the batch variable in the order it should have 
-                // in the value matrix 
-                batch |= (fire as u64) << (j - i);
-                
-                let output_start = neuron_count - self.output_count;
-                if j >= output_start {
-                    // we iterate the neurons sequentially so this works
-                    output.push((fire, sum));
-                }
-            }
+        for (i, v) in self.act.iter().enumerate() {
+            let chunk_size = size_of::<NeuronChunk>() * 8;
+            let mut sum = self.calc_sum(i);
             
-            self.values[i / 64] = batch;
+            if i < self.input_count {
+                sum += input[i].0 as i32;
+            }
+
+            let fire = sum > v.0 as i32;
+
+            if fire {
+                self.values[i / chunk_size].0 |= 1 << (i % chunk_size);
+            } else {
+                self.values[i / chunk_size].0 &= !(1 << (i % chunk_size));
+            }
+
+            if i >= output_start {
+                output.push((fire, sum));
+            }
         }
 
         Ok(())
     }
 
     #[inline]
-    unsafe fn calc_sum(&self, neuron: usize) -> i32 {
+    fn calc_sum(&self, neuron: usize) -> i32 {
         let mut sum = 0;
-        let weight_row_size = self.values.len();
-        let row_start = neuron * weight_row_size;
+        let row_size = self.values.len();
 
-        // for every row in the weight matrix (it's square)
-        for i in 0..weight_row_size {
-            // perform an xnor with the weights and values, then add the popcount of that value
-            // and subtract the zero count
-            // this produces the following value per connection/weight:
-            //          !weight   weight  
-            // !value |    1    |  -1    |
-            // -------+---------+--------+
-            // value  |   -1    |   1    |
-
-            // couldn't get the bounds check optimized away unfortunately
-            // not having the bounds check allows the compiler to vectorize the loop
-            let weighted = !(self.weight_matrix.get_unchecked(row_start + i) ^ self.values.get_unchecked(i));
-            sum += weighted.count_ones() as i32;
-            sum -= weighted.count_zeros() as i32;
+        let weight_iter = self.weight_matrix[neuron * row_size..(neuron + 1) * row_size].iter();
+        let value_iter = self.values[0..row_size].iter();
+        for (weights, values) in weight_iter.zip(value_iter) {
+            let weighted = !(weights.0 ^ values.0);
+            let popcount = weighted.count_ones() as i32; 
+            sum += popcount;
+            sum -= (size_of::<NeuronChunk>() * 8) as i32 - popcount;
         }
 
         sum
     }
 
     #[inline]
-    pub fn weights(&self) -> &[u64] {
+    pub fn weights(&self) -> &[NeuronChunk] {
         self.weight_matrix.as_slice()
     }
 
     #[inline]
-    pub fn activations(&self) -> &[u8] {
+    pub fn activations(&self) -> &[Activation] {
         self.act.as_slice()
     }
 
@@ -208,13 +205,20 @@ impl BinaryBrain {
     }
 }
 
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct NeuronChunk(pub u64);
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct Activation(pub i8);
+
 #[derive(Debug)]
 pub enum BinaryBrainError {
-    TotalNotDivisbleBy64,
+    TotalNotDivisbleByChunkSize,
     InputOutputAboveTotal,
     WrongInputShape,
-    ZeroPopSize,
-    InvalidProbability(f64),
+    InvalidPopSize,
     ZeroTournamentSize,
     InvalidWeightActivationCombo,
 }
@@ -222,50 +226,50 @@ pub enum BinaryBrainError {
 
 #[cfg(test)]
 mod benches {
-    use test::{Bencher};
-    use crate::BinaryBrain;
+    use test::{Bencher, black_box};
+    use crate::*;
 
     #[bench]
     fn cycle_64(b: &mut Bencher) {
         let mut nn = BinaryBrain::new(32, 32, 64).unwrap();
-        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
-            nn.cycle(&input, &mut output).unwrap();
-        });
-    } 
-
-    #[bench]
-    fn cycle_512(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(32, 32, 512).unwrap();
-        let input = [u8::MAX; 32];
-        let mut output = vec![];
-
-        b.iter(|| {
-            nn.cycle(&input, &mut output).unwrap();
+            let input = black_box(&[Activation(0); 32]);
+            nn.cycle(input, &mut output).unwrap();
         });
     }
 
     #[bench]
-    fn cycle_4096(b: &mut Bencher) {
-        let mut nn = BinaryBrain::new(32, 32, 4096).unwrap();
-        let input = [u8::MAX; 32];
+    fn cycle_512(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 512).unwrap();
         let mut output = vec![];
 
         b.iter(|| {
-            nn.cycle(&input, &mut output).unwrap();
+            let input = black_box(&[Activation(0); 32]);
+            nn.cycle(input, &mut output).unwrap();
+        });
+    } 
+
+    #[bench]
+    fn cycle_4096(b: &mut Bencher) {
+        let mut nn = BinaryBrain::new(32, 32, 4096).unwrap();
+        let mut output = vec![];
+
+        b.iter(|| {
+            let input = black_box(&[Activation(0); 32]);
+            nn.cycle(input, &mut output).unwrap();
         });
     }
 
     #[bench]
     fn cycle_32768(b: &mut Bencher) {
         let mut nn = BinaryBrain::new(32, 32, 32768).unwrap();
-        let input = [u8::MAX; 32];
         let mut output = vec![];
 
         b.iter(|| {
-            nn.cycle(&input, &mut output).unwrap();
+            let input = black_box(&[Activation(0); 32]);
+            nn.cycle(input, &mut output).unwrap();
         });
     }
 }

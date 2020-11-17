@@ -1,13 +1,12 @@
 [package]
 name = "binary-brain"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Pjottos <->"]
 edition = "2018"
 
 
 [dependencies]
 rand = "0.7"
-rand_xoshiro = "0.4"
 rayon = "1"
 byteorder = "1"
 
