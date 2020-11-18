@@ -142,7 +142,7 @@ mod benches {
     use test::{Bencher};
     use super::*;
 
-    // the genetic trainer has a linear time complexity with regard to popsize, so only test with popsize 1
+    // the genetic trainer has a linear time complexity with regard to popsize, so only test with popsize 2
 
     #[bench]
     fn genetic_breed_4096_16(b: &mut Bencher) {

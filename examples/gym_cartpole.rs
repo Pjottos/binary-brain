@@ -14,9 +14,10 @@ const CYCLE_COUNT: usize = 1;
 // genetic trainer params
 const POPULATION_SIZE: usize = 256;
 const TOURNAMENT_SIZE: usize = 16;
-const MUTATION: u8 = 2; // mutation per parameter: p = 2/256
+const MUTATION: u8 = 3; // mutation per parameter: p = 3/256
 
 const MAX_GENERATIONS: usize = 64;
+const REEVALUATE_COUNT: usize = 16;
 
 fn main() {
     println!("pretrained brain to load (leave empty to train):");
@@ -35,8 +36,8 @@ fn main() {
         let gym = gym::GymClient::default();
         let env = gym.make("CartPole-v1");
         
-        for i in 0..MAX_GENERATIONS {
-            let top_fitness = trainer.evaluate(|brain| {
+        'train: for i in 0..MAX_GENERATIONS {
+            let evaluation = |brain: &mut BinaryBrain| {
                 let mut input = map_observation(env.reset().unwrap());
                 let mut output = Vec::with_capacity(OUTPUT_COUNT);
                 let mut fitness = 0.0;
@@ -55,7 +56,9 @@ fn main() {
                 }
     
                 fitness
-            });
+            };
+
+            let top_fitness = trainer.evaluate(evaluation);
     
             println!("generation {} finished, top fitness: {}", i, top_fitness);
     
@@ -64,6 +67,13 @@ fn main() {
             if top_fitness < 500.0 {
                 trainer.breed();
             } else {
+                for _ in 0..REEVALUATE_COUNT {
+                    let top_fitness = trainer.evaluate(evaluation);
+                    if top_fitness < 500.0 {
+                        println!("individual did not pass re-evaluation test");
+                        continue 'train;
+                    }
+                }
                 println!("achieved maximum fitness");
                 break;
             }
@@ -126,19 +136,19 @@ fn map_observation(observation: gym::SpaceData) -> [Activation; INPUT_COUNT] {
         // cart position (negative is left, positive is right)
         // the allowed range is [-4.8, 4.8] but since the cart is almost never
         // out that far, we prefer better resolution near the center
-        Activation(((vec[0] / 2.4) * 255.0) as i8),
+        Activation(((vec[0] / 2.4) * 127.0) as i8),
 
         // cart velocity (- left, + right)
         // theoretically this has infinite range but practically it will
         // never go outside this range, so long as the environment is not forced to continue
-        Activation(((vec[1] / 3.0) * 255.0) as i8),
+        Activation(((vec[1] / 3.0) * 127.0) as i8),
         
         // pole angle in radians (- left, + right)
         // this is the allowed range, if the pole tips outside it the env terminates
-        Activation(((vec[2] / 0.418) * 255.0) as i8),
+        Activation(((vec[2] / 0.418) * 127.0) as i8),
         
         // pole angular velocity
         // again, technically infinite
-        Activation(((vec[3] / 4.5) * 255.0) as i8),
+        Activation(((vec[3] / 4.5) * 127.0) as i8),
     ]
 }
